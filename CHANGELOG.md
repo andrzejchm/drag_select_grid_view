@@ -1,3 +1,7 @@
+## [Unreleased]
+
+* Add `DragSelectGridView.enableSelectionModeDrag` (defaults to `false`): once selection mode is active, an immediate drag along the axis perpendicular to `scrollDirection` continues range selection without requiring another long-press.
+
 ## [0.7.6] - 16/02/2026
 
 * Fix back button popping the route instead of cancelling selection when the grid is created with a non-empty controller ([#34](https://github.com/hcbpassos/drag_select_grid_view/pull/34)).
