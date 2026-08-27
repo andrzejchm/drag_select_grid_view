@@ -1,6 +1,7 @@
 import 'package:drag_select_grid_view/drag_select_grid_view.dart';
 import 'package:drag_select_grid_view/src/auto_scroll/auto_scroll.dart';
 import 'package:drag_select_grid_view/src/drag_select_grid_view/drag_select_grid_view.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart' hide SelectionChangedCallback;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -2348,6 +2349,170 @@ void main() {
         expect(state.selectedIndexes, {0, 1});
 
         await freshGesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that triggerSelectionOnTap is true, "
+      ""
+      "when an item is tapped without dragging, "
+      ""
+      "then the item gets selected, "
+      "and, when tapped again, "
+      "then the item gets UNSELECTED - "
+      "taps still win arbitration against the horizontal-drag recognizer.",
+      (tester) async {
+        await setUp(
+          tester,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+          triggerSelectionOnTap: true,
+        );
+
+        expect(dragSelectState.isSelecting, isFalse);
+
+        await tester.tap(firstItemFinder, warnIfMissed: false);
+        await tester.pump();
+
+        expect(dragSelectState.isSelecting, isTrue);
+        expect(dragSelectState.selectedIndexes, {0});
+
+        await tester.tap(firstItemFinder, warnIfMissed: false);
+        await tester.pump();
+
+        expect(dragSelectState.isSelecting, isFalse);
+        expect(dragSelectState.selectedIndexes, <int>{});
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger and that the scroll is reversed, "
+      "when the first item is pressed and dragged to the second item, "
+      ""
+      "then the second item gets selected "
+      "and the first item stills selected, "
+      ""
+      "and, when subsequently dragged into the upper hotspot, "
+      "then forward auto-scroll is triggered, "
+      "just like reverse flips auto-scroll direction for longPress.",
+      (tester) async {
+        await setUp(
+          tester,
+          reverse: true,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+        );
+
+        expect(dragSelectState.autoScroll, AutoScroll.stopped());
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await dragInSteps(tester, gesture, mainAxisItemsDistance);
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0, 1});
+
+        // Dragging into the upper hotspot.
+        await gesture.moveTo(
+          Offset(tester.getCenter(firstItemFinder).dx, 1),
+        );
+        await tester.pump();
+
+        expect(
+          dragSelectState.autoScroll.direction,
+          AutoScrollDirection.forward,
+        );
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that a drag selection is active, "
+      ""
+      "when the pointer is cancelled instead of lifted, "
+      ""
+      "then the drag ends and the selection made so far is kept, "
+      "and a fresh later gesture still works correctly, "
+      "proving the pointer bookkeeping recovered.",
+      (tester) async {
+        await setUp(
+          tester,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+        );
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await dragInSteps(tester, gesture, mainAxisItemsDistance);
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0, 1});
+
+        // The pointer is cancelled instead of lifted, e.g. as would happen
+        // if the system showed a modal dialog on top of the app.
+        await gesture.cancel();
+        await tester.pump();
+
+        expect(dragSelectState.isDragging, isFalse);
+        expect(dragSelectState.selectedIndexes, {0, 1});
+
+        // A fresh gesture afterward still anchors and drags correctly.
+        final thirdItemFinder = find.byKey(const ValueKey('grid-item-2'));
+        final freshGesture = await tester.startGesture(
+          tester.getCenter(thirdItemFinder),
+        );
+        await dragInSteps(tester, freshGesture, mainAxisItemsDistance);
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0, 1, 2, 3});
+
+        await freshGesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a long-press trigger (the default), "
+      "and that a pointer is down but the long-press hasn't been "
+      "recognized yet, "
+      ""
+      "when the widget rebuilds with dragSelectionTrigger switched "
+      "to horizontalDrag, "
+      ""
+      "then the in-progress pointer sequence still completes "
+      "as a long-press selection, "
+      "because the trigger was frozen at pointer-down.",
+      (tester) async {
+        await tester.pumpWidget(createWidget());
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await tester.pump();
+
+        // The widget rebuilds mid-pointer-sequence, switching the
+        // configured trigger before the long-press recognizer has
+        // recognized the hold.
+        await tester.pumpWidget(
+          createWidget(
+            dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+          ),
+        );
+
+        // Wait out the long-press hold, as the original (frozen) trigger
+        // requires - a horizontal-drag recognizer would need movement
+        // instead.
+        await tester.pump(kLongPressTimeout + kPressTimeout);
+
+        final state = tester.state(gridFinder) as DragSelectGridViewState;
+        expect(state.isDragging, isTrue);
+        expect(state.selectedIndexes, {0});
+
+        await gesture.up();
         await tester.pump();
       },
     );
