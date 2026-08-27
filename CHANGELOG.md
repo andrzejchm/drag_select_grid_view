@@ -1,3 +1,7 @@
+## [0.7.7] - 27/08/2026
+
+* Silence `cacheExtent` deprecation warnings introduced by Flutter 3.41, restoring the full pub.dev static analysis score. No functional changes.
+
 ## [0.7.6] - 16/02/2026
 
 * Fix back button popping the route instead of cancelling selection when the grid is created with a non-empty controller ([#34](https://github.com/hcbpassos/drag_select_grid_view/pull/34)).
