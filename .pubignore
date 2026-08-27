@@ -16,3 +16,7 @@ example/web/
 example/.flutter-plugins
 example/.flutter-plugins-dependencies
 example/.metadata
+
+# IDE files
+*.iml
+.idea/
