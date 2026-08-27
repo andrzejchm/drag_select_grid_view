@@ -2516,5 +2516,86 @@ void main() {
         await tester.pump();
       },
     );
+
+    testWidgets(
+      "Given the default long-press trigger, "
+      "and that pointer A went down and started long-pressing, "
+      ""
+      "when pointer B touches down before A's hold completes "
+      "and never lifts, "
+      "and A's hold then completes and A lifts (ending A's own drag) "
+      "while B remains down, "
+      "and the widget rebuilds with a different configured trigger, "
+      ""
+      "then no recognizer disposal assertion is thrown, "
+      "because the trigger stays frozen until B's pointer sequence "
+      "ends too - "
+      "not just until A's own drag ends - "
+      "and, once B lifts and the widget rebuilds back, "
+      "a fresh pointer sequence still starts a selection normally.",
+      (tester) async {
+        // A long-press recognizer resolves `onLongPressEnd` off of its own
+        // primary pointer alone, so pointer A's own end (not the whole
+        // pointer sequence's end) is what drives `_endDragSelection()` here,
+        // exercising the exact case the fix addresses: another pointer (B)
+        // is still down in `_activePointerIds` at that moment.
+        await setUp(tester);
+
+        final pointerA = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        // Pointer B touches down before A's long-press hold completes, and
+        // never moves or lifts on its own.
+        final thirdItemFinder = find.byKey(const ValueKey('grid-item-2'));
+        final pointerB = await tester.startGesture(
+          tester.getCenter(thirdItemFinder),
+        );
+        await tester.pump();
+
+        // Waiting out the hold recognizes A's long-press.
+        await tester.pump(kLongPressTimeout + kPressTimeout);
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0});
+
+        // A lifts, ending A's own drag, while B remains down.
+        await pointerA.up();
+        await tester.pump();
+
+        // The widget rebuilds with a different configured trigger while B's
+        // pointer sequence hasn't ended yet. This must not tear down a
+        // recognizer that's still tracking B.
+        await tester.pumpWidget(
+          createWidget(
+            dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+          ),
+        );
+
+        expect(tester.takeException(), isNull);
+
+        // B finally lifts, fully ending the pointer sequence.
+        await pointerB.up();
+        await tester.pump();
+
+        // Rebuilding back to the long-press trigger, a fresh pointer
+        // sequence behaves normally again, now that the whole previous
+        // sequence has fully ended.
+        await tester.pumpWidget(createWidget());
+
+        final freshItemFinder = find.byKey(const ValueKey('grid-item-3'));
+        final freshGesture = await tester.startGesture(
+          tester.getCenter(freshItemFinder),
+        );
+        await tester.pump(kLongPressTimeout + kPressTimeout);
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0, 3});
+
+        await freshGesture.up();
+        await tester.pump();
+      },
+    );
   });
 }

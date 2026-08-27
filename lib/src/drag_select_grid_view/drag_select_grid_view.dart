@@ -668,10 +668,13 @@ class DragSelectGridViewState extends State<DragSelectGridView>
   }
 
   void _endDragSelection() {
-    setState(() {
-      _selectionManager.endDrag();
-      _activeDragSelectionTrigger = null;
-    });
+    // `_activeDragSelectionTrigger` is deliberately left untouched here: it
+    // must stay frozen until the whole pointer sequence ends (see
+    // `_handlePointerSequenceEnd`), not just when this pointer's drag ends.
+    // Clearing it early would let a rebuild swap which recognizer is wired
+    // up while another pointer is still down, tearing down a recognizer
+    // that's still tracking that pointer.
+    setState(_selectionManager.endDrag);
     _lastDragPosition = null;
     stopScrolling();
   }
