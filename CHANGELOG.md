@@ -1,3 +1,7 @@
+## Unreleased
+
+* Add an optional horizontal-drag selection trigger while preserving long-press selection by default.
+
 ## [0.7.6] - 16/02/2026
 
 * Fix back button popping the route instead of cancelling selection when the grid is created with a non-empty controller ([#34](https://github.com/hcbpassos/drag_select_grid_view/pull/34)).

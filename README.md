@@ -85,6 +85,8 @@ You can check the code [here](https://github.com/hcbpassos/drag_select_grid_view
 
 There are some other minor settings you can do to make `DragSelectGridView` fit your needs, like `DragSelectGridView.autoScrollHotspotHeight`. Those features are well documented, so I'll let you take your discovery time.
 
+Drag selection starts with a long press by default. To let horizontal-first movement start selection immediately while vertical-first movement continues to scroll the grid, set `dragSelectionTrigger: DragSelectionTrigger.horizontalDrag`.
+
 Hopefully, this is everything you need to know to use this library. 
   
 ## Running the example

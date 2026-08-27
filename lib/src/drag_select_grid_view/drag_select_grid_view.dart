@@ -30,11 +30,19 @@ import 'selection.dart';
 
 /// Function signature for creating widgets based on the index and whether
 /// it is selected or not.
-typedef SelectableWidgetBuilder = Widget Function(
-  BuildContext context,
-  int index,
-  bool selected,
-);
+typedef SelectableWidgetBuilder =
+    Widget Function(BuildContext context, int index, bool selected);
+
+/// Gesture that starts drag selection.
+enum DragSelectionTrigger {
+  /// Starts drag selection after a long press.
+  longPress,
+
+  /// Starts drag selection when horizontal movement wins the gesture arena.
+  ///
+  /// Vertical-first movement remains available to the grid's scroll view.
+  horizontalDrag,
+}
 
 /// Grid that supports both dragging and tapping to select its items.
 ///
@@ -82,6 +90,7 @@ class DragSelectGridView extends StatefulWidget {
     ScrollController? scrollController,
     this.gridController,
     this.triggerSelectionOnTap = false,
+    this.dragSelectionTrigger = DragSelectionTrigger.longPress,
     this.scrollDirection = Axis.vertical,
     this.reverse = false,
     this.primary,
@@ -103,10 +112,10 @@ class DragSelectGridView extends StatefulWidget {
     this.clipBehavior = Clip.hardEdge,
     this.hitTestBehavior = HitTestBehavior.opaque,
     this.impliesAppBarDismissal = true,
-  })  : autoScrollHotspotHeight =
-            autoScrollHotspotHeight ?? defaultAutoScrollHotspotHeight,
-        scrollController = scrollController ?? ScrollController(),
-        _ownsScrollController = scrollController == null;
+  }) : autoScrollHotspotHeight =
+           autoScrollHotspotHeight ?? defaultAutoScrollHotspotHeight,
+       scrollController = scrollController ?? ScrollController(),
+       _ownsScrollController = scrollController == null;
 
   /// The extent of the hotspot that enables auto-scroll, measured along the
   /// scroll axis.
@@ -142,6 +151,16 @@ class DragSelectGridView extends StatefulWidget {
   ///
   /// Defaults to false.
   final bool triggerSelectionOnTap;
+
+  /// Gesture that starts drag selection.
+  ///
+  /// [DragSelectionTrigger.longPress] preserves the default long-press
+  /// behavior. [DragSelectionTrigger.horizontalDrag] lets horizontal-first
+  /// movement claim drag selection while vertical-first movement remains
+  /// available for scrolling.
+  ///
+  /// Defaults to [DragSelectionTrigger.longPress].
+  final DragSelectionTrigger dragSelectionTrigger;
 
   /// {@macro flutter.widgets.scroll_view.scrollDirection}
   ///
@@ -252,7 +271,9 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     with AutoScrollerMixin<DragSelectGridView> {
   final _elements = <SelectableElement>{};
   final _selectionManager = SelectionManager();
-  LongPressMoveUpdateDetails? _lastMoveUpdateDetails;
+  Offset? _lastDragPosition;
+  Offset? _pointerDownPosition;
+  DragSelectionTrigger? _activeDragSelectionTrigger;
   LocalHistoryEntry? _historyEntry;
 
   DragSelectGridViewController? get _gridController => widget.gridController;
@@ -279,8 +300,8 @@ class DragSelectGridViewState extends State<DragSelectGridView>
 
   @override
   void handleScroll() {
-    final details = _lastMoveUpdateDetails;
-    if (details != null) _handleLongPressMoveUpdate(details);
+    final position = _lastDragPosition;
+    if (position != null) _updateDragSelection(position);
   }
 
   @override
@@ -309,11 +330,36 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       triggerAutoScrollIfNeeded();
     });
-    return GestureDetector(
+
+    final dragSelectionTrigger = isDragging
+        ? _activeDragSelectionTrigger!
+        : widget.dragSelectionTrigger;
+    final gestureDetector = GestureDetector(
       onTapUp: _handleTapUp,
-      onLongPressStart: _handleLongPressStart,
-      onLongPressMoveUpdate: _handleLongPressMoveUpdate,
-      onLongPressEnd: _handleLongPressEnd,
+      onLongPressStart: switch (dragSelectionTrigger) {
+        DragSelectionTrigger.longPress => _handleLongPressStart,
+        DragSelectionTrigger.horizontalDrag => null,
+      },
+      onLongPressMoveUpdate: switch (dragSelectionTrigger) {
+        DragSelectionTrigger.longPress => _handleLongPressMoveUpdate,
+        DragSelectionTrigger.horizontalDrag => null,
+      },
+      onLongPressEnd: switch (dragSelectionTrigger) {
+        DragSelectionTrigger.longPress => _handleLongPressEnd,
+        DragSelectionTrigger.horizontalDrag => null,
+      },
+      onHorizontalDragStart: switch (dragSelectionTrigger) {
+        DragSelectionTrigger.longPress => null,
+        DragSelectionTrigger.horizontalDrag => _handleHorizontalDragStart,
+      },
+      onHorizontalDragUpdate: switch (dragSelectionTrigger) {
+        DragSelectionTrigger.longPress => null,
+        DragSelectionTrigger.horizontalDrag => _handleHorizontalDragUpdate,
+      },
+      onHorizontalDragEnd: switch (dragSelectionTrigger) {
+        DragSelectionTrigger.longPress => null,
+        DragSelectionTrigger.horizontalDrag => _handleHorizontalDragEnd,
+      },
       behavior: HitTestBehavior.translucent,
       child: IgnorePointer(
         ignoring: isDragging,
@@ -356,6 +402,14 @@ class DragSelectGridViewState extends State<DragSelectGridView>
         ),
       ),
     );
+
+    return switch (dragSelectionTrigger) {
+      DragSelectionTrigger.longPress => gestureDetector,
+      DragSelectionTrigger.horizontalDrag => Listener(
+        onPointerDown: _handlePointerDown,
+        child: gestureDetector,
+      ),
+    };
   }
 
   void _onSelectionChanged() {
@@ -363,8 +417,9 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     if (controller != null) {
       final controllerSelectedIndexes = controller.value.selectedIndexes;
       if (!setEquals(controllerSelectedIndexes, selectedIndexes)) {
-        setState(() =>
-            _selectionManager.selectedIndexes = controllerSelectedIndexes);
+        setState(
+          () => _selectionManager.selectedIndexes = controllerSelectedIndexes,
+        );
         _updateLocalHistory();
       }
     }
@@ -383,7 +438,39 @@ class DragSelectGridViewState extends State<DragSelectGridView>
   }
 
   void _handleLongPressStart(LongPressStartDetails details) {
-    final pressIndex = _findIndexOfSelectable(details.localPosition);
+    _activeDragSelectionTrigger = DragSelectionTrigger.longPress;
+    _startDragSelection(details.localPosition);
+  }
+
+  void _handleLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
+    _updateDragSelection(details.localPosition);
+  }
+
+  void _handleLongPressEnd(LongPressEndDetails details) {
+    _endDragSelection();
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _pointerDownPosition = event.localPosition;
+  }
+
+  void _handleHorizontalDragStart(DragStartDetails details) {
+    _activeDragSelectionTrigger = DragSelectionTrigger.horizontalDrag;
+    final startPosition = _pointerDownPosition ?? details.localPosition;
+    _pointerDownPosition = null;
+    _startDragSelection(startPosition);
+  }
+
+  void _handleHorizontalDragUpdate(DragUpdateDetails details) {
+    _updateDragSelection(details.localPosition);
+  }
+
+  void _handleHorizontalDragEnd(DragEndDetails details) {
+    _endDragSelection();
+  }
+
+  void _startDragSelection(Offset position) {
+    final pressIndex = _findIndexOfSelectable(position);
 
     if (pressIndex != -1) {
       setState(() => _selectionManager.startDrag(pressIndex));
@@ -392,14 +479,14 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     }
   }
 
-  void _handleLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
+  void _updateDragSelection(Offset position) {
     if (!isDragging) return;
 
-    _lastMoveUpdateDetails = details;
-    var dragIndex = _findIndexOfSelectable(details.localPosition);
+    _lastDragPosition = position;
+    var dragIndex = _findIndexOfSelectable(position);
 
     if (dragIndex == -1) {
-      dragIndex = _findIndexOfSelectableInEmptySpace(details.localPosition);
+      dragIndex = _findIndexOfSelectableInEmptySpace(position);
     }
 
     if ((dragIndex != -1) && (dragIndex != _selectionManager.dragEndIndex)) {
@@ -407,13 +494,13 @@ class DragSelectGridViewState extends State<DragSelectGridView>
       _notifySelectionChange();
     }
 
-    if (isInsideStartAutoScrollHotspot(details.localPosition)) {
+    if (isInsideStartAutoScrollHotspot(position)) {
       if (widget.reverse) {
         startAutoScrollingForward();
       } else {
         startAutoScrollingBackward();
       }
-    } else if (isInsideEndAutoScrollHotspot(details.localPosition)) {
+    } else if (isInsideEndAutoScrollHotspot(position)) {
       if (widget.reverse) {
         startAutoScrollingBackward();
       } else {
@@ -424,8 +511,12 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     }
   }
 
-  void _handleLongPressEnd(LongPressEndDetails details) {
-    setState(_selectionManager.endDrag);
+  void _endDragSelection() {
+    setState(() {
+      _selectionManager.endDrag();
+      _activeDragSelectionTrigger = null;
+    });
+    _lastDragPosition = null;
     stopScrolling();
   }
 
