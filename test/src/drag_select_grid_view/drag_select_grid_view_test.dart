@@ -25,6 +25,7 @@ void main() {
     Axis? scrollDirection,
     bool? reverse,
     bool? triggerSelectionOnTap,
+    DragSelectionTrigger? dragSelectionTrigger,
   }) {
     return MaterialApp(
       home: Row(
@@ -47,6 +48,8 @@ void main() {
                 crossAxisCount: 4,
               ),
               triggerSelectionOnTap: triggerSelectionOnTap ?? false,
+              dragSelectionTrigger:
+                  dragSelectionTrigger ?? DragSelectionTrigger.longPress,
             ),
           )
         ],
@@ -65,12 +68,14 @@ void main() {
     Axis? scrollDirection,
     bool? reverse,
     bool? triggerSelectionOnTap,
+    DragSelectionTrigger? dragSelectionTrigger,
   }) async {
     final widget = createWidget(
       gridController: gridController,
       scrollDirection: scrollDirection,
       reverse: reverse,
       triggerSelectionOnTap: triggerSelectionOnTap,
+      dragSelectionTrigger: dragSelectionTrigger,
     );
 
     await tester.pumpWidget(widget);
@@ -1746,6 +1751,462 @@ void main() {
         );
       },
       skip: false,
+    );
+  });
+
+  /// Moves [gesture] by [offset], split into two separate pointer moves
+  /// instead of a single jump.
+  ///
+  /// A real drag reports movement incrementally; sending the whole [offset]
+  /// as a single synthetic move only crosses the touch-slop threshold and
+  /// starts the gesture, without also reporting an update for the rest of
+  /// the movement.
+  Future<void> dragInSteps(
+    WidgetTester tester,
+    TestGesture gesture,
+    Offset offset,
+  ) async {
+    final firstStep = offset * 0.5;
+    await gesture.moveBy(firstStep);
+    await tester.pump();
+    await gesture.moveBy(offset - firstStep);
+    await tester.pump();
+  }
+
+  group("Horizontal-drag trigger.", () {
+    test(
+      "DragSelectGridView defaults dragSelectionTrigger to "
+      "DragSelectionTrigger.longPress.",
+      () {
+        final widget = DragSelectGridView(
+          itemCount: 1,
+          itemBuilder: (_, __, ___) => Container(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 4,
+          ),
+        );
+
+        expect(widget.dragSelectionTrigger, DragSelectionTrigger.longPress);
+      },
+    );
+
+    test(
+      "Given that dragSelectionTrigger is DragSelectionTrigger.horizontalDrag, "
+      "when scrollDirection is Axis.horizontal, "
+      "then an assertion error is thrown, "
+      "because both would compete for horizontal pointer movement.",
+      () {
+        expect(
+          () => DragSelectGridView(
+            dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+            scrollDirection: Axis.horizontal,
+            itemCount: 1,
+            itemBuilder: (_, __, ___) => Container(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+            ),
+          ),
+          throwsAssertionError,
+        );
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "when the first item is pressed and immediately dragged to the second, "
+      "without waiting for a long-press hold, "
+      ""
+      "then the drag selection starts right away.",
+      (tester) async {
+        await setUp(
+          tester,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+        );
+
+        expect(dragSelectState.isDragging, isFalse);
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await dragInSteps(tester, gesture, mainAxisItemsDistance);
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0, 1});
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that the pointer goes down near the right edge of the first item, "
+      ""
+      "when it's dragged just past the touch-slop threshold, "
+      "which by itself lands over the second item, "
+      ""
+      "then the drag selection still anchors to the first item, "
+      "i.e. the item under the original pointer-down position.",
+      (tester) async {
+        await setUp(
+          tester,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+        );
+
+        final firstItemRect = tester.getRect(firstItemFinder);
+        final downPosition = Offset(
+          firstItemRect.right - 2,
+          firstItemRect.center.dy,
+        );
+
+        final gesture = await tester.startGesture(downPosition);
+        // 20 logical pixels clears `kTouchSlop` (18.0), and lands 18 pixels
+        // inside the second item.
+        await gesture.moveBy(const Offset(20, 0));
+        await tester.pump();
+
+        expect(dragSelectState.isDragging, isTrue);
+        expect(dragSelectState.selectedIndexes, {0});
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and a grid tall enough to scroll, "
+      ""
+      "when the first item is pressed and dragged vertically, "
+      ""
+      "then no drag selection starts, "
+      "and the grid scrolls instead.",
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DragSelectGridView(
+              dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+              itemCount: 40,
+              itemBuilder: (_, index, __) => Container(
+                key: ValueKey('grid-item-$index'),
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+              ),
+            ),
+          ),
+        );
+
+        final state = tester.state(gridFinder) as DragSelectGridViewState;
+        final item0 = find.byKey(const ValueKey('grid-item-0'));
+
+        final gesture = await tester.startGesture(tester.getCenter(item0));
+        await dragInSteps(tester, gesture, const Offset(0, -200));
+
+        expect(state.isDragging, isFalse);
+        expect(state.isSelecting, isFalse);
+        expect(state.scrollController.offset, greaterThan(0));
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that dragging forward selected the first three items, "
+      ""
+      "when dragging back to the first item, "
+      ""
+      "then the extra items get UNSELECTED "
+      "and the first item stills selected.",
+      (tester) async {
+        await setUp(
+          tester,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+        );
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+
+        // Dragging forward selects the first three items.
+        await dragInSteps(tester, gesture, mainAxisItemsDistance * 2);
+        expect(dragSelectState.selectedIndexes, {0, 1, 2});
+
+        // Dragging back to the first item unselects the extra ones.
+        await dragInSteps(tester, gesture, -mainAxisItemsDistance * 2);
+        expect(dragSelectState.selectedIndexes, {0});
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that the pointer is held stationary inside the auto-scroll "
+      "hotspot, "
+      ""
+      "when the grid scrolls beneath it (as auto-scroll would), "
+      ""
+      "then the selection is replayed against the new layout "
+      "and picks up the items now under the stationary pointer.",
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DragSelectGridView(
+              dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+              itemCount: 40,
+              itemBuilder: (_, index, __) => Container(
+                key: ValueKey('grid-item-$index'),
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+              ),
+            ),
+          ),
+        );
+
+        final state = tester.state(gridFinder) as DragSelectGridViewState;
+
+        final item0 = find.byKey(const ValueKey('grid-item-0'));
+        final item1 = find.byKey(const ValueKey('grid-item-1'));
+        final mainAxisDistance =
+            tester.getCenter(item1) - tester.getCenter(item0);
+
+        // Start the horizontal-drag selection, then move into and hold
+        // inside the bottom auto-scroll hotspot.
+        final gesture = await tester.startGesture(tester.getCenter(item0));
+        await dragInSteps(tester, gesture, mainAxisDistance);
+
+        final hotspotPosition = Offset(
+          tester.getCenter(item0).dx,
+          state.context.size!.height - 1,
+        );
+        await gesture.moveTo(hotspotPosition);
+        await tester.pump();
+
+        final selectedCountBeforeScroll = state.selectedIndexes.length;
+
+        // Simulate the grid scrolling underneath the stationary pointer, as
+        // auto-scroll would, and let the replay re-evaluate the selection
+        // against the now-current layout.
+        state.scrollController.jumpTo(state.scrollController.offset + 300);
+        await tester.pump();
+        state.handleScroll();
+
+        expect(
+          state.selectedIndexes.length,
+          greaterThan(selectedCountBeforeScroll),
+        );
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that a pointer is down but the drag hasn't started yet, "
+      ""
+      "when the widget rebuilds with dragSelectionTrigger switched "
+      "to longPress, "
+      ""
+      "then the in-progress pointer sequence still completes "
+      "as a horizontal-drag selection, "
+      "because the trigger was frozen at pointer-down.",
+      (tester) async {
+        await tester.pumpWidget(
+          createWidget(
+            dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+          ),
+        );
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await tester.pump();
+
+        // The widget rebuilds mid-pointer-sequence, switching the
+        // configured trigger before the horizontal-drag recognizer has
+        // accepted the gesture.
+        await tester.pumpWidget(
+          createWidget(dragSelectionTrigger: DragSelectionTrigger.longPress),
+        );
+
+        final secondItemFinder = find.byKey(const ValueKey('grid-item-1'));
+        final mainAxisDistance = tester.getCenter(secondItemFinder) -
+            tester.getCenter(firstItemFinder);
+
+        await dragInSteps(tester, gesture, mainAxisDistance);
+
+        final state = tester.state(gridFinder) as DragSelectGridViewState;
+        expect(state.isDragging, isTrue);
+        expect(state.selectedIndexes, {0, 1});
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that a first pointer is down over the first item, "
+      ""
+      "when a second pointer touches down over a different item "
+      "before the first pointer starts dragging, "
+      ""
+      "then the second pointer doesn't overwrite the drag-selection anchor, "
+      "and dragging the first pointer still starts the selection "
+      "from the first item.",
+      (tester) async {
+        // A grid tall enough to scroll, so the grid's own vertical drag
+        // recognizer is a genuine competitor in the gesture arena.
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DragSelectGridView(
+              dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+              itemCount: 40,
+              itemBuilder: (_, index, __) => Container(
+                key: ValueKey('grid-item-$index'),
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+              ),
+            ),
+          ),
+        );
+
+        final state = tester.state(gridFinder) as DragSelectGridViewState;
+        final item0 = find.byKey(const ValueKey('grid-item-0'));
+        final item1 = find.byKey(const ValueKey('grid-item-1'));
+        final item2 = find.byKey(const ValueKey('grid-item-2'));
+        final mainAxisDistance =
+            tester.getCenter(item1) - tester.getCenter(item0);
+
+        final firstPointer = await tester.startGesture(
+          tester.getCenter(item0),
+        );
+        final secondPointer = await tester.startGesture(
+          tester.getCenter(item2),
+        );
+        await tester.pump();
+
+        // The second pointer lifts before the first pointer starts
+        // dragging, so it can no longer influence the first pointer's
+        // gesture, but the anchor it may have overwritten is what's under
+        // test here.
+        await secondPointer.up();
+        await tester.pump();
+
+        await dragInSteps(tester, firstPointer, mainAxisDistance);
+
+        expect(state.isDragging, isTrue);
+        expect(state.selectedIndexes, {0, 1});
+
+        await firstPointer.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that a pointer went down and up "
+      "without moving enough to start a drag selection, "
+      ""
+      "when a brand new pointer sequence starts over a different item, "
+      ""
+      "then it anchors to that item, "
+      "without any stale pointer-down state left over.",
+      (tester) async {
+        await setUp(
+          tester,
+          dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+        );
+
+        // A stray touch-and-release over the first item, without enough
+        // movement to start a drag selection.
+        final strayPointer = await tester.startGesture(
+          tester.getCenter(firstItemFinder),
+        );
+        await strayPointer.up();
+        await tester.pump();
+
+        expect(dragSelectState.isDragging, isFalse);
+
+        // A brand new gesture, anchored to a different item, isn't affected
+        // by the stray pointer's leftover state.
+        final thirdItemFinder = find.byKey(const ValueKey('grid-item-2'));
+        final gesture = await tester.startGesture(
+          tester.getCenter(thirdItemFinder),
+        );
+        await dragInSteps(tester, gesture, mainAxisItemsDistance);
+
+        expect(dragSelectState.selectedIndexes, {2, 3});
+
+        await gesture.up();
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      "Given a horizontal-drag trigger, "
+      "and that a first pointer went down over the first item "
+      "and a second pointer went down over a different item, "
+      ""
+      "when the first pointer lifts before any drag starts "
+      "and the second pointer then drags, "
+      ""
+      "then the second pointer anchors to its own down position, "
+      "not the first pointer's, and not a post-slop position.",
+      (tester) async {
+        // A grid tall enough to scroll, so the grid's own vertical drag
+        // recognizer is a genuine competitor in the gesture arena.
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DragSelectGridView(
+              dragSelectionTrigger: DragSelectionTrigger.horizontalDrag,
+              itemCount: 40,
+              itemBuilder: (_, index, __) => Container(
+                key: ValueKey('grid-item-$index'),
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+              ),
+            ),
+          ),
+        );
+
+        final state = tester.state(gridFinder) as DragSelectGridViewState;
+        final item0 = find.byKey(const ValueKey('grid-item-0'));
+        final item2 = find.byKey(const ValueKey('grid-item-2'));
+        final item3 = find.byKey(const ValueKey('grid-item-3'));
+        final mainAxisDistance =
+            tester.getCenter(item3) - tester.getCenter(item2);
+
+        final firstPointer = await tester.startGesture(
+          tester.getCenter(item0),
+        );
+        final secondPointer = await tester.startGesture(
+          tester.getCenter(item2),
+        );
+        await tester.pump();
+
+        // The first pointer (the original candidate) lifts before starting
+        // a drag; the second pointer should be promoted using its own down
+        // position, not the first pointer's.
+        await firstPointer.up();
+        await tester.pump();
+
+        await dragInSteps(tester, secondPointer, mainAxisDistance);
+
+        expect(state.isDragging, isTrue);
+        expect(state.selectedIndexes, {2, 3});
+
+        await secondPointer.up();
+        await tester.pump();
+      },
     );
   });
 }

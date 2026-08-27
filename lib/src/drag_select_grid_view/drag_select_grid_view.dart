@@ -30,8 +30,8 @@ import 'selection.dart';
 
 /// Function signature for creating widgets based on the index and whether
 /// it is selected or not.
-typedef SelectableWidgetBuilder =
-    Widget Function(BuildContext context, int index, bool selected);
+typedef SelectableWidgetBuilder = Widget Function(
+    BuildContext context, int index, bool selected);
 
 /// Gesture that starts drag selection.
 enum DragSelectionTrigger {
@@ -41,6 +41,9 @@ enum DragSelectionTrigger {
   /// Starts drag selection when horizontal movement wins the gesture arena.
   ///
   /// Vertical-first movement remains available to the grid's scroll view.
+  ///
+  /// Requires [DragSelectGridView.scrollDirection] to be [Axis.vertical];
+  /// see [DragSelectGridView.dragSelectionTrigger].
   horizontalDrag,
 }
 
@@ -112,10 +115,19 @@ class DragSelectGridView extends StatefulWidget {
     this.clipBehavior = Clip.hardEdge,
     this.hitTestBehavior = HitTestBehavior.opaque,
     this.impliesAppBarDismissal = true,
-  }) : autoScrollHotspotHeight =
-           autoScrollHotspotHeight ?? defaultAutoScrollHotspotHeight,
-       scrollController = scrollController ?? ScrollController(),
-       _ownsScrollController = scrollController == null;
+  })  : assert(
+          dragSelectionTrigger != DragSelectionTrigger.horizontalDrag ||
+              scrollDirection != Axis.horizontal,
+          'DragSelectionTrigger.horizontalDrag cannot be used with '
+          'scrollDirection: Axis.horizontal, because both interpret '
+          'horizontal pointer movement. Either use '
+          'DragSelectionTrigger.longPress, or keep scrollDirection at '
+          'Axis.vertical.',
+        ),
+        autoScrollHotspotHeight =
+            autoScrollHotspotHeight ?? defaultAutoScrollHotspotHeight,
+        scrollController = scrollController ?? ScrollController(),
+        _ownsScrollController = scrollController == null;
 
   /// The extent of the hotspot that enables auto-scroll, measured along the
   /// scroll axis.
@@ -158,6 +170,10 @@ class DragSelectGridView extends StatefulWidget {
   /// behavior. [DragSelectionTrigger.horizontalDrag] lets horizontal-first
   /// movement claim drag selection while vertical-first movement remains
   /// available for scrolling.
+  ///
+  /// [DragSelectionTrigger.horizontalDrag] requires [scrollDirection] to be
+  /// [Axis.vertical], since both would otherwise compete for horizontal
+  /// pointer movement. Asserts otherwise.
   ///
   /// Defaults to [DragSelectionTrigger.longPress].
   final DragSelectionTrigger dragSelectionTrigger;
@@ -271,9 +287,36 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     with AutoScrollerMixin<DragSelectGridView> {
   final _elements = <SelectableElement>{};
   final _selectionManager = SelectionManager();
+
+  /// Pointers currently down, tracked from raw [PointerDownEvent]s so that
+  /// [_activeDragSelectionTrigger] can be frozen for the whole pointer
+  /// sequence, even before a recognizer accepts the gesture.
+  final _activePointerIds = <int>{};
+
   Offset? _lastDragPosition;
-  Offset? _pointerDownPosition;
+
+  /// Down position of every pointer currently active, keyed by pointer id.
+  ///
+  /// Tracked per pointer - rather than only for the current candidate - so
+  /// that if the candidate pointer lifts before starting a drag, the next
+  /// remaining pointer can be promoted using its own down position, instead
+  /// of falling back to a post-slop position or inheriting the previous
+  /// candidate's.
+  final _pointerDownPositions = <int, Offset>{};
+
+  /// Id of the pointer that is the current candidate to start a drag
+  /// selection.
+  ///
+  /// Set on pointer-down and consumed once a drag-selection gesture starts,
+  /// so a later finger touching down can't overwrite it.
+  int? _pointerDownPointerId;
+
+  /// [widget.dragSelectionTrigger] frozen for the duration of the current
+  /// pointer sequence, so switching it mid-gesture (e.g. via a rebuild)
+  /// doesn't change which recognizers are wired up and tear down a
+  /// recognizer that's still tracking the pointer.
   DragSelectionTrigger? _activeDragSelectionTrigger;
+
   LocalHistoryEntry? _historyEntry;
 
   DragSelectGridViewController? get _gridController => widget.gridController;
@@ -331,86 +374,96 @@ class DragSelectGridViewState extends State<DragSelectGridView>
       triggerAutoScrollIfNeeded();
     });
 
-    final dragSelectionTrigger = isDragging
-        ? _activeDragSelectionTrigger!
-        : widget.dragSelectionTrigger;
-    final gestureDetector = GestureDetector(
-      onTapUp: _handleTapUp,
-      onLongPressStart: switch (dragSelectionTrigger) {
-        DragSelectionTrigger.longPress => _handleLongPressStart,
-        DragSelectionTrigger.horizontalDrag => null,
-      },
-      onLongPressMoveUpdate: switch (dragSelectionTrigger) {
-        DragSelectionTrigger.longPress => _handleLongPressMoveUpdate,
-        DragSelectionTrigger.horizontalDrag => null,
-      },
-      onLongPressEnd: switch (dragSelectionTrigger) {
-        DragSelectionTrigger.longPress => _handleLongPressEnd,
-        DragSelectionTrigger.horizontalDrag => null,
-      },
-      onHorizontalDragStart: switch (dragSelectionTrigger) {
-        DragSelectionTrigger.longPress => null,
-        DragSelectionTrigger.horizontalDrag => _handleHorizontalDragStart,
-      },
-      onHorizontalDragUpdate: switch (dragSelectionTrigger) {
-        DragSelectionTrigger.longPress => null,
-        DragSelectionTrigger.horizontalDrag => _handleHorizontalDragUpdate,
-      },
-      onHorizontalDragEnd: switch (dragSelectionTrigger) {
-        DragSelectionTrigger.longPress => null,
-        DragSelectionTrigger.horizontalDrag => _handleHorizontalDragEnd,
-      },
-      behavior: HitTestBehavior.translucent,
-      child: IgnorePointer(
-        ignoring: isDragging,
-        child: GridView.builder(
-          controller: widget.scrollController,
-          scrollDirection: widget.scrollDirection,
-          reverse: widget.reverse,
-          primary: widget.primary,
-          physics: widget.physics,
-          shrinkWrap: widget.shrinkWrap,
-          padding: widget.padding,
-          gridDelegate: widget.gridDelegate,
-          itemCount: widget.itemCount,
-          findChildIndexCallback: widget.findChildIndexCallback,
-          addAutomaticKeepAlives: widget.addAutomaticKeepAlives,
-          addRepaintBoundaries: widget.addRepaintBoundaries,
-          addSemanticIndexes: widget.addSemanticIndexes,
-          cacheExtent: widget.cacheExtent,
-          semanticChildCount: widget.semanticChildCount,
-          dragStartBehavior: widget.dragStartBehavior,
-          keyboardDismissBehavior: widget.keyboardDismissBehavior,
-          restorationId: widget.restorationId,
-          clipBehavior: widget.clipBehavior,
-          hitTestBehavior: widget.hitTestBehavior,
-          itemBuilder: (context, index) {
-            return IgnorePointer(
-              ignoring: isSelecting || widget.triggerSelectionOnTap,
-              child: Selectable(
-                index: index,
-                onMountElement: _elements.add,
-                onUnmountElement: _elements.remove,
-                child: widget.itemBuilder(
-                  context,
-                  index,
-                  selectedIndexes.contains(index),
+    final dragSelectionTrigger =
+        _activeDragSelectionTrigger ?? widget.dragSelectionTrigger;
+    final callbacks = _dragSelectionCallbacksFor(dragSelectionTrigger);
+
+    return Listener(
+      onPointerDown: _handlePointerDown,
+      onPointerUp: _handlePointerUp,
+      onPointerCancel: _handlePointerCancel,
+      child: GestureDetector(
+        onTapUp: _handleTapUp,
+        onLongPressStart: callbacks.onLongPressStart,
+        onLongPressMoveUpdate: callbacks.onLongPressMoveUpdate,
+        onLongPressEnd: callbacks.onLongPressEnd,
+        onHorizontalDragStart: callbacks.onHorizontalDragStart,
+        onHorizontalDragUpdate: callbacks.onHorizontalDragUpdate,
+        onHorizontalDragEnd: callbacks.onHorizontalDragEnd,
+        behavior: HitTestBehavior.translucent,
+        child: IgnorePointer(
+          ignoring: isDragging,
+          child: GridView.builder(
+            controller: widget.scrollController,
+            scrollDirection: widget.scrollDirection,
+            reverse: widget.reverse,
+            primary: widget.primary,
+            physics: widget.physics,
+            shrinkWrap: widget.shrinkWrap,
+            padding: widget.padding,
+            gridDelegate: widget.gridDelegate,
+            itemCount: widget.itemCount,
+            findChildIndexCallback: widget.findChildIndexCallback,
+            addAutomaticKeepAlives: widget.addAutomaticKeepAlives,
+            addRepaintBoundaries: widget.addRepaintBoundaries,
+            addSemanticIndexes: widget.addSemanticIndexes,
+            cacheExtent: widget.cacheExtent,
+            semanticChildCount: widget.semanticChildCount,
+            dragStartBehavior: widget.dragStartBehavior,
+            keyboardDismissBehavior: widget.keyboardDismissBehavior,
+            restorationId: widget.restorationId,
+            clipBehavior: widget.clipBehavior,
+            hitTestBehavior: widget.hitTestBehavior,
+            itemBuilder: (context, index) {
+              return IgnorePointer(
+                ignoring: isSelecting || widget.triggerSelectionOnTap,
+                child: Selectable(
+                  index: index,
+                  onMountElement: _elements.add,
+                  onUnmountElement: _elements.remove,
+                  child: widget.itemBuilder(
+                    context,
+                    index,
+                    selectedIndexes.contains(index),
+                  ),
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
-
-    return switch (dragSelectionTrigger) {
-      DragSelectionTrigger.longPress => gestureDetector,
-      DragSelectionTrigger.horizontalDrag => Listener(
-        onPointerDown: _handlePointerDown,
-        child: gestureDetector,
-      ),
-    };
   }
+
+  /// Gesture-recognizer callbacks that implement [trigger], with the other
+  /// trigger's callbacks left `null` so its recognizer never claims the
+  /// gesture arena.
+  ({
+    GestureLongPressStartCallback? onLongPressStart,
+    GestureLongPressMoveUpdateCallback? onLongPressMoveUpdate,
+    GestureLongPressEndCallback? onLongPressEnd,
+    GestureDragStartCallback? onHorizontalDragStart,
+    GestureDragUpdateCallback? onHorizontalDragUpdate,
+    GestureDragEndCallback? onHorizontalDragEnd,
+  }) _dragSelectionCallbacksFor(DragSelectionTrigger trigger) =>
+      switch (trigger) {
+        DragSelectionTrigger.longPress => (
+            onLongPressStart: _handleLongPressStart,
+            onLongPressMoveUpdate: _handleLongPressMoveUpdate,
+            onLongPressEnd: _handleLongPressEnd,
+            onHorizontalDragStart: null,
+            onHorizontalDragUpdate: null,
+            onHorizontalDragEnd: null,
+          ),
+        DragSelectionTrigger.horizontalDrag => (
+            onLongPressStart: null,
+            onLongPressMoveUpdate: null,
+            onLongPressEnd: null,
+            onHorizontalDragStart: _handleHorizontalDragStart,
+            onHorizontalDragUpdate: _handleHorizontalDragUpdate,
+            onHorizontalDragEnd: _handleHorizontalDragEnd,
+          ),
+      };
 
   void _onSelectionChanged() {
     final controller = _gridController;
@@ -438,7 +491,6 @@ class DragSelectGridViewState extends State<DragSelectGridView>
   }
 
   void _handleLongPressStart(LongPressStartDetails details) {
-    _activeDragSelectionTrigger = DragSelectionTrigger.longPress;
     _startDragSelection(details.localPosition);
   }
 
@@ -451,13 +503,55 @@ class DragSelectGridViewState extends State<DragSelectGridView>
   }
 
   void _handlePointerDown(PointerDownEvent event) {
-    _pointerDownPosition = event.localPosition;
+    final isFirstActivePointer = _activePointerIds.isEmpty;
+    _activePointerIds.add(event.pointer);
+
+    // Freeze the trigger for the whole pointer sequence so a mid-gesture
+    // rebuild (e.g. `setState` elsewhere) can't swap which recognizer is
+    // wired up and tear down one that's still tracking the pointer.
+    if (isFirstActivePointer) {
+      _activeDragSelectionTrigger = widget.dragSelectionTrigger;
+    }
+
+    // Every pointer's own down position is kept, so a later pointer that
+    // gets promoted to candidate (see `_handlePointerSequenceEnd`) anchors
+    // to where it actually went down.
+    _pointerDownPositions[event.pointer] = event.localPosition;
+
+    // Only the first pointer down is a candidate for starting a drag
+    // selection; a second finger touching down must not overwrite it.
+    _pointerDownPointerId ??= event.pointer;
+  }
+
+  void _handlePointerUp(PointerUpEvent event) =>
+      _handlePointerSequenceEnd(event.pointer);
+
+  void _handlePointerCancel(PointerCancelEvent event) =>
+      _handlePointerSequenceEnd(event.pointer);
+
+  void _handlePointerSequenceEnd(int pointerId) {
+    _activePointerIds.remove(pointerId);
+    _pointerDownPositions.remove(pointerId);
+
+    if (_pointerDownPointerId == pointerId) {
+      // Promote the next remaining pointer (if any) as the new candidate,
+      // using its own down position rather than the one that just lifted.
+      _pointerDownPointerId =
+          _activePointerIds.isEmpty ? null : _activePointerIds.first;
+    }
+
+    if (_activePointerIds.isEmpty) {
+      _activeDragSelectionTrigger = null;
+    }
   }
 
   void _handleHorizontalDragStart(DragStartDetails details) {
-    _activeDragSelectionTrigger = DragSelectionTrigger.horizontalDrag;
-    final startPosition = _pointerDownPosition ?? details.localPosition;
-    _pointerDownPosition = null;
+    final pointerId = _pointerDownPointerId;
+    final startPosition =
+        (pointerId == null ? null : _pointerDownPositions[pointerId]) ??
+            details.localPosition;
+    if (pointerId != null) _pointerDownPositions.remove(pointerId);
+    _pointerDownPointerId = null;
     _startDragSelection(startPosition);
   }
 

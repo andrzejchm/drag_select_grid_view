@@ -85,7 +85,7 @@ You can check the code [here](https://github.com/hcbpassos/drag_select_grid_view
 
 There are some other minor settings you can do to make `DragSelectGridView` fit your needs, like `DragSelectGridView.autoScrollHotspotHeight`. Those features are well documented, so I'll let you take your discovery time.
 
-Drag selection starts with a long press by default. To let horizontal-first movement start selection immediately while vertical-first movement continues to scroll the grid, set `dragSelectionTrigger: DragSelectionTrigger.horizontalDrag`.
+Drag selection starts with a long press by default. To let horizontal-first movement start selection immediately while vertical-first movement continues to scroll the grid, set `dragSelectionTrigger: DragSelectionTrigger.horizontalDrag`. This requires `scrollDirection` to stay `Axis.vertical`, since a horizontally scrolling grid would compete with the horizontal-drag selection recognizer for the same gesture; use `DragSelectionTrigger.longPress` instead for horizontally scrolling grids.
 
 Hopefully, this is everything you need to know to use this library. 
   
