@@ -43,7 +43,8 @@ enum DragSelectionTrigger {
   /// Vertical-first movement remains available to the grid's scroll view.
   ///
   /// Requires [DragSelectGridView.scrollDirection] to be [Axis.vertical];
-  /// see [DragSelectGridView.dragSelectionTrigger].
+  /// see [DragSelectGridView.dragSelectionTrigger] for what happens
+  /// otherwise.
   horizontalDrag,
 }
 
@@ -173,7 +174,10 @@ class DragSelectGridView extends StatefulWidget {
   ///
   /// [DragSelectionTrigger.horizontalDrag] requires [scrollDirection] to be
   /// [Axis.vertical], since both would otherwise compete for horizontal
-  /// pointer movement. Asserts otherwise.
+  /// pointer movement. This asserts in debug builds. In release builds,
+  /// where asserts are stripped, the combination safely falls back to
+  /// [DragSelectionTrigger.longPress] instead of wiring up two recognizers
+  /// that would fight over the same gesture.
   ///
   /// Defaults to [DragSelectionTrigger.longPress].
   final DragSelectionTrigger dragSelectionTrigger;
@@ -317,9 +321,55 @@ class DragSelectGridViewState extends State<DragSelectGridView>
   /// recognizer that's still tracking the pointer.
   DragSelectionTrigger? _activeDragSelectionTrigger;
 
+  /// Whether more than one pointer was down at the same time before a
+  /// horizontal-drag selection started for the current pointer sequence.
+  ///
+  /// Flutter's `HorizontalDragGestureRecognizer` may end up tracking a
+  /// different pointer than the one this sequence anchored to once a second
+  /// pointer joins, so rather than guessing which pointer "won", no range
+  /// selection is started at all for that sequence. Reset once the whole
+  /// pointer sequence fully ends.
+  bool _hasMultiplePointersDown = false;
+
   LocalHistoryEntry? _historyEntry;
 
   DragSelectGridViewController? get _gridController => widget.gridController;
+
+  /// The [widget.dragSelectionTrigger] that should actually be wired up.
+  ///
+  /// The constructor already asserts that [DragSelectionTrigger.horizontalDrag]
+  /// isn't combined with a horizontal [DragSelectGridView.scrollDirection] in
+  /// debug builds; this is the release-mode (asserts stripped) safety net for
+  /// that same combination, so a horizontally scrolling grid never wires up a
+  /// horizontal-drag selection recognizer that would fight the grid's own
+  /// horizontal scrolling.
+  DragSelectionTrigger get _configuredDragSelectionTrigger =>
+      resolveDragSelectionTrigger(
+        trigger: widget.dragSelectionTrigger,
+        scrollDirection: widget.scrollDirection,
+      );
+
+  /// Resolves the [DragSelectionTrigger] that should actually be wired up
+  /// for a given [trigger] and [scrollDirection].
+  ///
+  /// Falls back to [DragSelectionTrigger.longPress] when [trigger] is
+  /// [DragSelectionTrigger.horizontalDrag] combined with a horizontal
+  /// [scrollDirection], since both would otherwise compete for the same
+  /// horizontal pointer movement. Pure and side-effect-free, so it's testable
+  /// on its own without constructing a widget (which asserts against this
+  /// same combination in debug builds).
+  @visibleForTesting
+  static DragSelectionTrigger resolveDragSelectionTrigger({
+    required DragSelectionTrigger trigger,
+    required Axis scrollDirection,
+  }) {
+    final isInvalidHorizontalCombination =
+        trigger == DragSelectionTrigger.horizontalDrag &&
+            scrollDirection == Axis.horizontal;
+    return isInvalidHorizontalCombination
+        ? DragSelectionTrigger.longPress
+        : trigger;
+  }
 
   /// Indexes selected by dragging or tapping.
   Set<int> get selectedIndexes => _selectionManager.selectedIndexes;
@@ -375,7 +425,7 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     });
 
     final dragSelectionTrigger =
-        _activeDragSelectionTrigger ?? widget.dragSelectionTrigger;
+        _activeDragSelectionTrigger ?? _configuredDragSelectionTrigger;
     final callbacks = _dragSelectionCallbacksFor(dragSelectionTrigger);
 
     return Listener(
@@ -510,7 +560,11 @@ class DragSelectGridViewState extends State<DragSelectGridView>
     // rebuild (e.g. `setState` elsewhere) can't swap which recognizer is
     // wired up and tear down one that's still tracking the pointer.
     if (isFirstActivePointer) {
-      _activeDragSelectionTrigger = widget.dragSelectionTrigger;
+      _activeDragSelectionTrigger = _configuredDragSelectionTrigger;
+    } else if (!isDragging) {
+      // A second (or further) pointer joined before any selection started;
+      // see `_hasMultiplePointersDown`.
+      _hasMultiplePointersDown = true;
     }
 
     // Every pointer's own down position is kept, so a later pointer that
@@ -542,6 +596,7 @@ class DragSelectGridViewState extends State<DragSelectGridView>
 
     if (_activePointerIds.isEmpty) {
       _activeDragSelectionTrigger = null;
+      _hasMultiplePointersDown = false;
     }
   }
 
@@ -552,6 +607,13 @@ class DragSelectGridViewState extends State<DragSelectGridView>
             details.localPosition;
     if (pointerId != null) _pointerDownPositions.remove(pointerId);
     _pointerDownPointerId = null;
+
+    // Flutter's `HorizontalDragGestureRecognizer` may end up tracking a
+    // different pointer than the one this sequence anchored to when more
+    // than one pointer was down before the drag started, so don't guess -
+    // just don't start a range selection for this pointer sequence.
+    if (_hasMultiplePointersDown) return;
+
     _startDragSelection(startPosition);
   }
 
