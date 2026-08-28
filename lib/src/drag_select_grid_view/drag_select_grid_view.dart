@@ -219,7 +219,7 @@ class DragSelectGridView extends StatefulWidget {
 
   /// {@macro flutter.rendering.RenderViewportBase.cacheExtent}
   ///
-  /// Refer to [ScrollView.cacheExtent].
+  /// Refer to `ScrollView.cacheExtent`.
   final double? cacheExtent;
 
   /// Refer to [ScrollView.semanticChildCount].
@@ -375,6 +375,7 @@ class DragSelectGridViewState extends State<DragSelectGridView>
           addAutomaticKeepAlives: widget.addAutomaticKeepAlives,
           addRepaintBoundaries: widget.addRepaintBoundaries,
           addSemanticIndexes: widget.addSemanticIndexes,
+          // ignore: deprecated_member_use
           cacheExtent: widget.cacheExtent,
           semanticChildCount: widget.semanticChildCount,
           dragStartBehavior: widget.dragStartBehavior,
